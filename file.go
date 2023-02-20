@@ -69,6 +69,10 @@ func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, 
 					continue
 				}
 
+				if genDecl.Doc == nil {
+					continue
+				}
+
 				for _, comment := range genDecl.Doc.List {
 					isTagged := isTaggedEnum(comment.Text)
 					if isTagged {
@@ -125,7 +129,7 @@ func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, 
 
 				for _, resDecl := range retDecl.Results {
 					resIdentDecl, ok := resDecl.(*ast.Ident)
-					if !ok {
+					if !ok || resIdentDecl.Obj == nil {
 						continue
 					}
 

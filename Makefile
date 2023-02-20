@@ -12,7 +12,7 @@ install-linter:
 	)
 
 clean:
-	rm -rf $(BIN_DIR)
+	rm -rf $(BIN_DIR) protoc-go-remove-enum-prefix
 
 .PHONY: install-linter
 lint: install-linter
@@ -31,3 +31,6 @@ test:
 	export GOBIN=$(BIN_DIR) && \
 	export PATH=$$GOBIN:$$PATH && \
 	go test ./...
+
+build:
+	go build -o protoc-go-remove-enum-prefix .
