@@ -55,13 +55,13 @@ package pb;
 option go_package = "/pb";
 
 // @go-enum-no-prefix
-enum ExampleEnum {
-  EXAMPLE_ENUM_UNSPECIFIED = 0;
-  EXAMPLE_ENUM_ONE = 1;
-  EXAMPLE_ENUM_TWO = 2;
+enum SomeEnum {
+  SOME_ENUM_UNSPECIFIED = 0;
+  SOME_ENUM_ONE = 1;
+  SOME_ENUM_TWO = 2;
 }
 
-message ExampleMessage {
+message SomeMessage {
   string id = 1;
   SomeEnum type = 2;
 }
