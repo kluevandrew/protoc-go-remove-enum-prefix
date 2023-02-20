@@ -81,7 +81,7 @@ $ protoc-go-remove-enum-prefix -input=./test.pb.go
 $ protoc-go-remove-enum-prefix -input="*.pb.go"
 ```
 
-The custom tags will be injected to `test.pb.go`:
+The resulted code will be in `test.pb.go`:
 
 ```go
 type SomeEnum int32
