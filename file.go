@@ -28,15 +28,17 @@ type CommentArea struct {
 
 func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, comments []CommentArea, err error) {
 	logf("parsing file %q for inject tag comments", inputPath)
+
 	fset := token.NewFileSet()
-	f, err := parser.ParseFile(fset, inputPath, src, parser.ParseComments)
+
+	fileHandle, err := parser.ParseFile(fset, inputPath, src, parser.ParseComments)
 	if err != nil {
 		return
 	}
 
 	enumTypesToReplace := map[string]any{}
 
-	for _, decl := range f.Decls {
+	for _, decl := range fileHandle.Decls {
 		// check if is generic declaration
 		genDecl, isGen := decl.(*ast.GenDecl)
 		funcDecl, isFunc := decl.(*ast.FuncDecl)
@@ -47,9 +49,11 @@ func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, 
 
 		if isGen {
 			var typeSpec *ast.TypeSpec
+
 			for _, spec := range genDecl.Specs {
 				if ts, tsOK := spec.(*ast.TypeSpec); tsOK {
 					typeSpec = ts
+
 					break
 				}
 			}
@@ -69,6 +73,7 @@ func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, 
 					isTagged := isTaggedEnum(comment.Text)
 					if isTagged {
 						enumTypesToReplace[typeSpec.Name.Name] = true
+
 						comments = append(comments, CommentArea{
 							Start: int(comment.Pos()),
 							End:   int(comment.End()),
@@ -97,7 +102,9 @@ func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, 
 
 					for _, valName := range valSpec.Names {
 						newName := valName.Name[len(valTypeIdentSpec.Name)+1:]
+
 						log.Printf("%s will be replaced with %s\n", valName.Name, newName)
+
 						idents = append(idents, EnumValueIdentArea{
 							Start:       int(valName.Pos()),
 							End:         int(valName.End()),
@@ -105,7 +112,6 @@ func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, 
 							NewName:     newName,
 						})
 					}
-
 				}
 			}
 		}
@@ -150,25 +156,26 @@ func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, 
 				}
 			}
 		}
-
 	}
+
 	logf("parsed file %q, number of fields to inject custom tags: %d", inputPath, len(idents))
+
 	return
 }
 
-func writeFile(inputPath string, idents []EnumValueIdentArea, comments []CommentArea) (err error) {
-	f, err := os.Open(inputPath)
+func writeFile(inputPath string, idents []EnumValueIdentArea, comments []CommentArea) error {
+	fileHandle, err := os.Open(inputPath)
 	if err != nil {
-		return
+		return err
 	}
 
-	contents, err := io.ReadAll(f)
+	contents, err := io.ReadAll(fileHandle)
 	if err != nil {
-		return
+		return err
 	}
 
-	if err = f.Close(); err != nil {
-		return
+	if err = fileHandle.Close(); err != nil {
+		return err
 	}
 
 	// Inject custom tags from tail of file first to preserve order
@@ -183,12 +190,14 @@ func writeFile(inputPath string, idents []EnumValueIdentArea, comments []Comment
 		commentArea := comments[len(comments)-i-1]
 		contents = removeEnumComment(contents, commentArea)
 	}
+
 	if err = os.WriteFile(inputPath, contents, 0o644); err != nil {
-		return
+		return err
 	}
 
 	if len(idents) > 0 {
 		logf("file %q is injected with custom tags", inputPath)
 	}
-	return
+
+	return nil
 }

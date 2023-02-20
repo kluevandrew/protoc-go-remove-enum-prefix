@@ -6,9 +6,10 @@ import (
 
 var verbose = false
 
-func logf(format string, v ...interface{}) {
+func logf(format string, arguments ...interface{}) {
 	if !verbose {
 		return
 	}
-	log.Printf(format, v...)
+
+	log.Printf(format, arguments...)
 }

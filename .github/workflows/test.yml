@@ -1,0 +1,24 @@
+name: Unit tests
+
+on:
+  push:
+    branches:
+      - master
+  pull_request:
+    branches:
+      - master
+
+jobs:
+  test:
+    name: unit testing
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+      - name: Set up Go 1.19.4
+        uses: actions/setup-go@v3
+        with:
+          go-version: 1.19.4
+      - run: go version
+      - name: Test
+        run: go test ./... -coverprofile cover.out

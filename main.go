@@ -10,6 +10,7 @@ import (
 
 func main() {
 	var inputFiles string
+
 	flag.StringVar(&inputFiles, "input", "", "pattern to match input file(s)")
 	flag.BoolVar(&verbose, "verbose", false, "verbose logging")
 
@@ -27,6 +28,7 @@ func main() {
 	}
 
 	var matched int
+
 	for _, path := range globResults {
 		finfo, err := os.Stat(path)
 		if err != nil {
@@ -48,6 +50,7 @@ func main() {
 		if err != nil {
 			log.Fatal(err)
 		}
+
 		if err = writeFile(path, indents, comments); err != nil {
 			log.Fatal(err)
 		}
