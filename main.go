@@ -29,6 +29,10 @@ func main() {
 
 	var matched int
 
+	sourceMap := SourceMap{}
+	enumsToReplace := map[string]any{}
+	replaces := map[string][]ReplaceArea{}
+
 	for _, path := range globResults {
 		finfo, err := os.Stat(path)
 		if err != nil {
@@ -44,14 +48,32 @@ func main() {
 			continue
 		}
 
+		if _, ok := sourceMap[path]; ok {
+			continue
+		}
+
 		matched++
 
-		indents, comments, err := parseFile(path, nil)
+		err = loadSources(path, sourceMap)
 		if err != nil {
 			log.Fatal(err)
 		}
+	}
 
-		if err = writeFile(path, indents, comments); err != nil {
+	// find enums
+	for _, path := range globResults {
+		replaces[path] = append(replaces[path], findEnumsToReplace(sourceMap[path], enumsToReplace)...)
+	}
+
+	// find idents
+	for _, path := range globResults {
+		replaces[path] = append(replaces[path], findIdents(sourceMap[path], enumsToReplace)...)
+	}
+
+	for _, path := range globResults {
+		fReplaces := replaces[path]
+
+		if err = writeFile(path, fReplaces); err != nil {
 			log.Fatal(err)
 		}
 	}

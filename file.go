@@ -2,17 +2,26 @@ package main
 
 import (
 	"go/ast"
+	"go/build"
 	"go/parser"
 	"go/token"
 	"io"
-	"log"
 	"os"
+	"path/filepath"
 	"regexp"
+	"sort"
+	"strings"
 )
 
 var (
 	rComment = regexp.MustCompile(`^//.*?@(?i:go-enum-no-prefix?)\s*(.*)$`)
 )
+
+type ReplaceArea interface {
+	GetStart() int
+	GetEnd() int
+	Replace(contents []byte, offset int) ([]byte, int)
+}
 
 type EnumValueIdentArea struct {
 	Start       int
@@ -21,24 +30,182 @@ type EnumValueIdentArea struct {
 	NewName     string
 }
 
-type CommentArea struct {
-	Start int
-	End   int
+func (r *EnumValueIdentArea) GetStart() int {
+	return r.Start
 }
 
-func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, comments []CommentArea, err error) {
-	logf("parsing file %q for inject tag comments", inputPath)
+func (r *EnumValueIdentArea) GetEnd() int {
+	return r.End
+}
+
+func (r *EnumValueIdentArea) Replace(contents []byte, offset int) ([]byte, int) {
+	var injected []byte
+	injected = append(injected, contents[:r.Start-1-offset]...)
+	injected = append(injected, r.NewName...)
+	injected = append(injected, contents[r.End-1-offset:]...)
+
+	diff := len(r.CurrentName) - len(r.NewName)
+	offset += diff
+
+	return injected, offset
+}
+
+type CommentArea struct {
+	Start    int
+	End      int
+	EnumType string
+}
+
+func (r *CommentArea) GetStart() int {
+	return r.Start
+}
+
+func (r *CommentArea) GetEnd() int {
+	return r.End
+}
+
+func (r *CommentArea) Replace(contents []byte, offset int) ([]byte, int) {
+	var injected []byte
+
+	start := r.Start - 1 - offset
+	end := r.End - 1 - offset
+
+	prevChar := string(contents[r.Start-2])
+	if prevChar == "\n" {
+		start--
+	}
+
+	injected = append(injected, contents[:start]...)
+	injected = append(injected, contents[end:]...)
+
+	offset += end - start
+
+	return injected, offset
+}
+
+type SourceMap = map[string]SourceMapFile
+
+type SourceMapFile struct {
+	Offset int
+	Decls  []ast.Decl
+}
+
+func simpleImporter(imports map[string]*ast.Object, path string) (*ast.Object, error) {
+	pkg := imports[path]
+	if pkg == nil {
+		// note that strings.LastIndex returns -1 if there is no "/"
+		pkg = ast.NewObj(ast.Pkg, path[strings.LastIndex(path, "/")+1:])
+		pkg.Data = ast.NewScope(nil) // required by ast.NewPackage for dot-import
+		imports[path] = pkg
+	}
+
+	return pkg, nil
+}
+
+func loadSources(inputPath string, sourceMap SourceMap) error {
+	logf("parsing file %q for comments", inputPath)
 
 	fset := token.NewFileSet()
 
-	fileHandle, err := parser.ParseFile(fset, inputPath, src, parser.ParseComments)
+	buildPkg, err := build.ImportDir(filepath.Dir(inputPath), build.ImportComment)
 	if err != nil {
-		return
+		return err
 	}
 
-	enumTypesToReplace := map[string]any{}
+	files := make(map[string]*ast.File)
 
-	for _, decl := range fileHandle.Decls {
+	for _, file := range append(buildPkg.GoFiles, buildPkg.CgoFiles...) {
+		fname := filepath.Join(buildPkg.Dir, file)
+		// src, err := os.ReadFile(fname)
+		// if err != nil {
+		//	return err
+		//}
+		f, err := parser.ParseFile(fset, fname, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		files[fname] = f
+	}
+
+	astPkg, _ := ast.NewPackage(fset, files, simpleImporter, nil)
+
+	for path, file := range astPkg.Files {
+		fset2 := token.NewFileSet()
+
+		decl2, err := parser.ParseFile(fset2, path, nil, parser.ParseComments)
+		if err != nil {
+			return err
+		}
+
+		sourceMap[path] = SourceMapFile{
+			Offset: int(file.Comments[0].Pos()) - int(decl2.Comments[0].Pos()),
+			Decls:  file.Decls,
+		}
+	}
+
+	return nil
+}
+
+func findEnumsToReplace(source SourceMapFile, enumsToReplace map[string]any) []ReplaceArea {
+	var comments []ReplaceArea
+
+	for _, decl := range source.Decls {
+		// check if is generic declaration
+		genDecl, isGen := decl.(*ast.GenDecl)
+
+		if !isGen {
+			continue
+		}
+
+		var typeSpec *ast.TypeSpec
+
+		for _, spec := range genDecl.Specs {
+			if ts, tsOK := spec.(*ast.TypeSpec); tsOK {
+				typeSpec = ts
+
+				break
+			}
+		}
+
+		if typeSpec == nil {
+			continue
+		}
+
+		ident, ok := typeSpec.Type.(*ast.Ident)
+		if !ok {
+			continue
+		}
+
+		if ident.Name != "int32" {
+			continue
+		}
+
+		if genDecl.Doc == nil {
+			continue
+		}
+
+		for _, comment := range genDecl.Doc.List {
+			isTagged := isTaggedEnum(comment.Text)
+			if isTagged {
+				enumsToReplace[typeSpec.Name.Name] = true
+
+				comments = append(comments, &CommentArea{
+					Start:    int(comment.Pos()) - source.Offset,
+					End:      int(comment.End()) - source.Offset,
+					EnumType: typeSpec.Name.Name,
+				})
+			}
+		}
+	}
+
+	return comments
+}
+
+func findIdents(source SourceMapFile, enumsToReplace map[string]any) []ReplaceArea {
+	var idents []ReplaceArea
+
+	for _, decl := range source.Decls {
 		// check if is generic declaration
 		genDecl, isGen := decl.(*ast.GenDecl)
 		funcDecl, isFunc := decl.(*ast.FuncDecl)
@@ -48,46 +215,6 @@ func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, 
 		}
 
 		if isGen {
-			var typeSpec *ast.TypeSpec
-
-			for _, spec := range genDecl.Specs {
-				if ts, tsOK := spec.(*ast.TypeSpec); tsOK {
-					typeSpec = ts
-
-					break
-				}
-			}
-
-			// skip if can't get type spec
-			if typeSpec != nil {
-				ident, ok := typeSpec.Type.(*ast.Ident)
-				if !ok {
-					continue
-				}
-
-				if ident.Name != "int32" {
-					continue
-				}
-
-				if genDecl.Doc == nil {
-					continue
-				}
-
-				for _, comment := range genDecl.Doc.List {
-					isTagged := isTaggedEnum(comment.Text)
-					if isTagged {
-						enumTypesToReplace[typeSpec.Name.Name] = true
-
-						comments = append(comments, CommentArea{
-							Start: int(comment.Pos()),
-							End:   int(comment.End()),
-						})
-					}
-				}
-
-				continue
-			}
-
 			if genDecl.Tok == token.CONST {
 				for _, val := range genDecl.Specs {
 					valSpec, ok := val.(*ast.ValueSpec)
@@ -100,18 +227,16 @@ func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, 
 						continue
 					}
 
-					if _, ok = enumTypesToReplace[valTypeIdentSpec.Name]; !ok {
+					if _, ok = enumsToReplace[valTypeIdentSpec.Name]; !ok {
 						continue
 					}
 
 					for _, valName := range valSpec.Names {
 						newName := valName.Name[len(valTypeIdentSpec.Name)+1:]
 
-						log.Printf("%s will be replaced with %s\n", valName.Name, newName)
-
-						idents = append(idents, EnumValueIdentArea{
-							Start:       int(valName.Pos()),
-							End:         int(valName.End()),
+						idents = append(idents, &EnumValueIdentArea{
+							Start:       int(valName.Pos()) - source.Offset,
+							End:         int(valName.End()) - source.Offset,
 							CurrentName: valName.Name,
 							NewName:     newName,
 						})
@@ -147,13 +272,13 @@ func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, 
 						continue
 					}
 
-					if _, ok = enumTypesToReplace[resValueTypeDecl.Name]; !ok {
+					if _, ok = enumsToReplace[resValueTypeDecl.Name]; !ok {
 						continue
 					}
 
-					idents = append(idents, EnumValueIdentArea{
-						Start:       int(resDecl.Pos()),
-						End:         int(resDecl.End()),
+					idents = append(idents, &EnumValueIdentArea{
+						Start:       int(resDecl.Pos()) - source.Offset,
+						End:         int(resDecl.End()) - source.Offset,
 						CurrentName: resIdentDecl.Name,
 						NewName:     resIdentDecl.Name[len(resValueTypeDecl.Name)+1:],
 					})
@@ -162,12 +287,10 @@ func parseFile(inputPath string, src interface{}) (idents []EnumValueIdentArea, 
 		}
 	}
 
-	logf("parsed file %q, number of fields to inject custom tags: %d", inputPath, len(idents))
-
-	return
+	return idents
 }
 
-func writeFile(inputPath string, idents []EnumValueIdentArea, comments []CommentArea) error {
+func writeFile(inputPath string, replaces []ReplaceArea) error {
 	fileHandle, err := os.Open(inputPath)
 	if err != nil {
 		return err
@@ -182,25 +305,22 @@ func writeFile(inputPath string, idents []EnumValueIdentArea, comments []Comment
 		return err
 	}
 
-	// Inject custom tags from tail of file first to preserve order
-	for i := range idents {
-		identArea := idents[len(idents)-i-1]
-		logf("inject custom tag %q to expression %q", identArea.CurrentName, string(contents[identArea.Start-1:identArea.End-1]))
-		contents = replaceEnumValueIdent(contents, identArea)
-	}
+	offset := 0
 
-	// Remove tags
-	for i := range comments {
-		commentArea := comments[len(comments)-i-1]
-		contents = removeEnumComment(contents, commentArea)
+	sort.Slice(replaces, func(i, j int) bool {
+		return replaces[i].GetStart() < replaces[j].GetStart()
+	})
+
+	for _, replaceArea := range replaces {
+		contents, offset = replaceArea.Replace(contents, offset)
 	}
 
 	if err = os.WriteFile(inputPath, contents, 0o644); err != nil {
 		return err
 	}
 
-	if len(idents) > 0 {
-		logf("file %q is injected with custom tags", inputPath)
+	if len(replaces) > 0 {
+		logf("file %q has %d replaces", inputPath, replaces)
 	}
 
 	return nil
